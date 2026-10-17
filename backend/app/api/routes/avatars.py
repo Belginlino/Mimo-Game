@@ -24,10 +24,9 @@ async def upload_and_generate_avatar(
     Upload user photo to initiate personalized 3D avatar generation.
     Validates file format/size and creates an asynchronous generation job.
     """
-    # Validate and save upload
-    stored_path, file_id = await storage_service.save_upload(file)
-
     provider, provider_name, is_configured = get_image3d_provider()
+    # Do not retain a personal photo when the real generation provider is unavailable.
+    stored_path, _ = await storage_service.save_upload(file, persist=is_configured)
 
     job_id = str(uuid.uuid4())
 
@@ -40,10 +39,7 @@ async def upload_and_generate_avatar(
         stored_image_path=stored_path,
         provider=provider_name,
         progress=10 if is_configured else 0,
-        error_message=None if is_configured else (
-            "Image-to-3D service requires an API key (e.g. MESHY_API_KEY in backend/.env). "
-            "Please configure the key to generate custom meshes, or enjoy playing with Mimo's built-in 3D avatar!"
-        ),
+        error_message=None if is_configured else "Human avatar generation provider is not verified and configured. Set IMAGE3D_PROVIDER, server credentials, and confirm the provider's human-avatar capability in backend settings.",
         created_at=datetime.datetime.utcnow(),
     )
 
@@ -56,6 +52,10 @@ async def upload_and_generate_avatar(
         except Exception as e:
             job.status = "failed"
             job.error_message = f"Failed to submit task to 3D provider: {str(e)}"
+        finally:
+            # Never retain the submitted source image after an attempt.
+            storage_service.delete_file(stored_path)
+            job.stored_image_path = ""
 
     db.add(job)
     db.commit()
@@ -63,7 +63,7 @@ async def upload_and_generate_avatar(
     return AvatarUploadResponse(
         job_id=job.id,
         status=job.status,
-        message="Photo uploaded and generation job queued." if job.status != "failed" else (job.error_message or "Setup required"),
+        message="Photo submitted to the configured avatar provider." if job.status != "failed" else (job.error_message or "Setup required"),
         original_filename=job.original_filename,
         created_at=job.created_at.isoformat(),
     )
@@ -86,7 +86,10 @@ async def get_avatar_status(avatar_id: str, db: Session = Depends(get_db)):
                 job.status = task_info.get("status", job.status)
                 job.progress = task_info.get("progress", job.progress)
 
-                if job.status == "succeeded" and task_info.get("model_url"):
+                if job.status == "succeeded" and not task_info.get("model_url"):
+                    job.status = "failed"
+                    job.error_message = "Provider reported completion without a downloadable GLB model."
+                elif job.status == "succeeded" and task_info.get("model_url"):
                     # Save model locally
                     model_filename = f"{job.id}.glb"
                     model_path = os.path.join(settings.GENERATED_MODELS_DIR, model_filename)
@@ -95,8 +98,9 @@ async def get_avatar_status(avatar_id: str, db: Session = Depends(get_db)):
                         job.model_filename = model_filename
                         job.model_url = f"/api/avatars/{job.id}/model.glb"
                     except Exception as dl_err:
-                        # Fallback: keep remote model url if direct download fails
-                        job.model_url = task_info["model_url"]
+                        storage_service.delete_file(model_path)
+                        job.status = "failed"
+                        job.error_message = f"Generated model could not be safely validated or downloaded: {dl_err}"
 
                 elif job.status == "failed":
                     job.error_message = task_info.get("error", "Unknown provider error")
@@ -125,7 +129,8 @@ def download_avatar_model(avatar_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Model file not found.")
 
     abs_path = os.path.abspath(os.path.join(settings.GENERATED_MODELS_DIR, job.model_filename))
-    if not abs_path.startswith(os.path.abspath(settings.GENERATED_MODELS_DIR)) or not os.path.exists(abs_path):
+    model_root = os.path.abspath(settings.GENERATED_MODELS_DIR)
+    if os.path.commonpath([abs_path, model_root]) != model_root or not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="Asset not found on disk.")
 
     return FileResponse(abs_path, media_type="model/gltf-binary", filename=f"mimo-avatar-{job.id[:8]}.glb")

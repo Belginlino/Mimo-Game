@@ -10,11 +10,13 @@ def get_image3d_provider() -> tuple[Base3DAvatarProvider, str, bool]:
     """
     if settings.IMAGE3D_PROVIDER == "meshy":
         provider = MeshyAvatarProvider()
-        return provider, "meshy", provider.is_configured()
+        return provider, "meshy", provider.is_configured() and settings.HUMAN_AVATAR_PROVIDER_VERIFIED
 
-    # Default is mock provider
+    # The mock is available to automated tests only and is never a production success path.
     mock_p = MockAvatarProvider()
-    return mock_p, "mock", True
+    if settings.APP_ENV == "test" and settings.IMAGE3D_PROVIDER == "mock":
+        return mock_p, "mock", True
+    return mock_p, "not_configured", False
 
 
 __all__ = ["Base3DAvatarProvider", "MeshyAvatarProvider", "MockAvatarProvider", "get_image3d_provider"]

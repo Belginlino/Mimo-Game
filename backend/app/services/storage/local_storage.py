@@ -14,7 +14,7 @@ class LocalStorageService:
         os.makedirs(self.upload_dir, exist_ok=True)
         os.makedirs(self.models_dir, exist_ok=True)
 
-    async def save_upload(self, file: UploadFile) -> Tuple[str, str]:
+    async def save_upload(self, file: UploadFile, persist: bool = True) -> Tuple[str, str]:
         """
         Validates and saves an uploaded image file.
         Returns: (stored_file_path, unique_file_id)
@@ -39,23 +39,33 @@ class LocalStorageService:
         destination_path = os.path.join(self.upload_dir, safe_filename)
 
         # Read and check size
-        content = await file.read()
+        content = await file.read(settings.MAX_UPLOAD_SIZE_BYTES + 1)
         if len(content) > settings.MAX_UPLOAD_SIZE_BYTES:
             raise HTTPException(
                 status_code=413,
                 detail=f"File exceeds maximum allowed size of {settings.MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
             )
 
-        with open(destination_path, "wb") as f:
-            f.write(content)
+        signatures = {
+            ".jpg": content.startswith(b"\xff\xd8\xff"),
+            ".jpeg": content.startswith(b"\xff\xd8\xff"),
+            ".png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+            ".webp": len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP",
+        }
+        if not signatures.get(ext, False):
+            raise HTTPException(status_code=400, detail="The uploaded file content does not match a supported image format.")
 
-        return destination_path, file_id
+        if persist:
+            with open(destination_path, "wb") as f:
+                f.write(content)
+
+        return (destination_path if persist else ""), file_id
 
     def delete_file(self, filepath: str) -> bool:
         """Safely delete a file ensuring it is within allowed storage directories."""
         abs_path = os.path.abspath(filepath)
-        is_in_uploads = abs_path.startswith(self.upload_dir)
-        is_in_models = abs_path.startswith(self.models_dir)
+        is_in_uploads = os.path.commonpath([abs_path, self.upload_dir]) == self.upload_dir
+        is_in_models = os.path.commonpath([abs_path, self.models_dir]) == self.models_dir
 
         if not (is_in_uploads or is_in_models):
             return False

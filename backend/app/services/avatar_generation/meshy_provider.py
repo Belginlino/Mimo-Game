@@ -1,6 +1,7 @@
 import base64
 import os
 import mimetypes
+from urllib.parse import urlparse
 from typing import Dict, Any, Optional
 import httpx
 from app.core.config import settings
@@ -42,8 +43,9 @@ class MeshyAvatarProvider(Base3DAvatarProvider):
 
         payload = {
             "image_url": data_uri,
+            "should_texture": True,
             "enable_pbr": True,
-            "surface_mode": "hard",
+            "target_formats": ["glb"],
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -52,7 +54,7 @@ class MeshyAvatarProvider(Base3DAvatarProvider):
             data = resp.json()
             task_id = data.get("result")
             if not task_id:
-                raise ValueError(f"Meshy API did not return task ID: {data}")
+                raise ValueError("Meshy API did not return a task ID.")
             return task_id
 
     async def get_task_status(self, provider_task_id: str) -> Dict[str, Any]:
@@ -93,16 +95,33 @@ class MeshyAvatarProvider(Base3DAvatarProvider):
             }
 
     async def download_model_glb(self, model_url: str, output_path: str) -> str:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(model_url)
-            resp.raise_for_status()
-            content = resp.content
+        parsed = urlparse(model_url)
+        host = (parsed.hostname or "").lower()
+        trusted_host = host == "meshy.ai" or host.endswith(".meshy.ai") or host == "amazonaws.com" or host.endswith(".amazonaws.com")
+        if parsed.scheme != "https" or not trusted_host or parsed.username or parsed.password:
+            raise ValueError("Provider returned a model URL outside the allowed HTTPS hosts.")
 
-            # Validate GLB header magic bytes ("glTF")
-            if len(content) < 4 or content[:4] != b"glTF":
-                raise ValueError("Downloaded file is not a valid GLB binary asset.")
+        max_model_bytes = 250 * 1024 * 1024
+        total = 0
+        prefix = bytearray()
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+            async with client.stream("GET", model_url) as resp:
+                resp.raise_for_status()
+                declared_size = int(resp.headers.get("content-length", "0") or 0)
+                if declared_size > max_model_bytes:
+                    raise ValueError("Provider model exceeds the 250 MB download limit.")
+                with open(output_path, "wb") as output:
+                    async for chunk in resp.aiter_bytes(1024 * 1024):
+                        total += len(chunk)
+                        if total > max_model_bytes:
+                            raise ValueError("Provider model exceeds the 250 MB download limit.")
+                        if len(prefix) < 4:
+                            prefix.extend(chunk[:4 - len(prefix)])
+                        output.write(chunk)
 
-            with open(output_path, "wb") as f:
-                f.write(content)
+        # Validate GLB header magic bytes ("glTF")
+        if total < 12 or bytes(prefix) != b"glTF":
+            os.remove(output_path)
+            raise ValueError("Downloaded file is not a valid GLB binary asset.")
 
-            return output_path
+        return output_path

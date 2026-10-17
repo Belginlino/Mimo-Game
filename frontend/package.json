@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "create:model": "python scripts/create_multiview_avatar.py",
     "preview": "vite preview",
     "test": "vitest run"
   },

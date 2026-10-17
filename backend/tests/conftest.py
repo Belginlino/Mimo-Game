@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 os.environ["DATABASE_URL"] = "sqlite:///./test_mimo.db"
 os.environ["AI_CHAT_PROVIDER"] = "demo"
 os.environ["IMAGE3D_PROVIDER"] = "mock"
+os.environ["APP_ENV"] = "test"
 
 from app.core.database import Base, get_db
 from app.main import app

@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     ENABLE_DEMO_FALLBACK: bool = True
 
     # 3D Avatar Generation configuration
-    IMAGE3D_PROVIDER: str = "mock"  # "mock" or "meshy"
+    IMAGE3D_PROVIDER: str = "none"  # "none" or "meshy"; mock is test-only
+    HUMAN_AVATAR_PROVIDER_VERIFIED: bool = False
+    APP_ENV: str = "development"
     MESHY_API_KEY: Optional[str] = None
     MESHY_API_BASE_URL: str = "https://api.meshy.ai/openapi/v1"
 
